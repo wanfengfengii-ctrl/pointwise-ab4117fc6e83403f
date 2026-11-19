@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
 from threading import Lock
@@ -25,7 +24,6 @@ class CompletedJob:
 class AnalysisJob:
     job_id: str
     accepted: PublishedInput | None
-    refresh: Callable[[str], PublishedInput]
     results: list[PairResult] = field(default_factory=list)
     totals: PairTotals = field(default_factory=PairTotals)
     finished: CompletedJob | None = None
@@ -50,10 +48,10 @@ class JobStore:
         with self._lock:
             return len(self._jobs)
 
-    def open(self, accepted: PublishedInput, refresh: Callable[[str], PublishedInput]) -> str:
+    def open(self, accepted: PublishedInput) -> str:
         with self._lock:
             job_id = f'JOB-{uuid4().hex}'
-            self._jobs[job_id] = AnalysisJob(job_id, accepted, refresh)
+            self._jobs[job_id] = AnalysisJob(job_id, accepted)
             return job_id
 
     def advance(self, job_id: str, batch_size: int) -> AdvanceResult:
@@ -67,32 +65,32 @@ class JobStore:
 
             accepted = job.accepted
             assert accepted is not None
-            current = job.refresh(accepted.trial_id)
-            try:
-                start = len(job.results)
-                end = min(start + batch_size, len(current.pairs))
-                batch = []
-                totals = job.totals
-                for pair in current.pairs[start:end]:
-                    row = evaluate_pair(pair, current.evidence.read(pair.left), current.evidence.read(pair.right))
-                    batch.append(row)
-                    totals = totals.add(row)
+            # The accepted revision and its leased pages define the job for its whole
+            # lifetime; a later publication must not change an already accepted job.
+            start = len(job.results)
+            end = min(start + batch_size, len(accepted.pairs))
+            batch = []
+            totals = job.totals
+            for pair in accepted.pairs[start:end]:
+                row = evaluate_pair(pair, accepted.evidence.read(pair.left),
+                                    accepted.evidence.read(pair.right))
+                batch.append(row)
+                totals = totals.add(row)
 
-                done = end == len(current.pairs)
-                if done:
-                    finished = CompletedJob(
-                        job_id, accepted.trial_id, accepted.revision_id, current.pairs,
-                        tuple(job.results) + tuple(batch), totals.valid_count, totals.mean(),
-                    )
-            finally:
-                current.evidence.close()
+            done = end == len(accepted.pairs)
+            if done:
+                finished = CompletedJob(
+                    job_id, accepted.trial_id, accepted.revision_id, accepted.pairs,
+                    tuple(job.results) + tuple(batch), totals.valid_count, totals.mean(),
+                )
             job.results.extend(batch)
             job.totals = totals
             if done:
                 job.finished = finished
                 job.accepted = None
                 accepted.evidence.close()
-            return AdvanceResult(job_id, accepted.revision_id, tuple(batch), end, len(current.pairs), done)
+            return AdvanceResult(job_id, accepted.revision_id, tuple(batch), end,
+                                 len(accepted.pairs), done)
 
     def completed(self, job_id: str) -> CompletedJob:
         with self._lock:

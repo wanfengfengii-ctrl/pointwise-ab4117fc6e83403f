@@ -10,6 +10,8 @@ class PageRetirement:
         self._lock = Lock()
         self._current: set[PageAddress] = set()
         self._retired: set[PageAddress] = set()
+        # Pages leased by accepted jobs must outlive their revision and keep their slots reserved.
+        self._holders: dict[PageAddress, int] = {}
 
     def initialize(self, locations: Iterable[SampleLocation]) -> None:
         with self._lock:
@@ -23,6 +25,9 @@ class PageRetirement:
         with self._lock:
             used = {address.slot for address in self._current - detaching}
             used.update(reserved_slots)
+            # A page leased by an accepted job keeps its slot until that job finishes,
+            # even after a newer revision has stopped referencing it.
+            used.update(address.slot for address in self._holders)
             slot = 1
             while slot in used:
                 slot += 1
@@ -41,6 +46,21 @@ class PageRetirement:
         with self._lock:
             return addresses <= self._current
 
+    def hold(self, addresses: Iterable[PageAddress]) -> None:
+        with self._lock:
+            for address in addresses:
+                self._holders[address] = self._holders.get(address, 0) + 1
+
+    def release(self, addresses: Iterable[PageAddress]) -> None:
+        with self._lock:
+            for address in addresses:
+                count = self._holders.get(address, 0) - 1
+                if count > 0:
+                    self._holders[address] = count
+                else:
+                    self._holders.pop(address, None)
+            self._reap_locked()
+
     def abandon(self, addresses: Iterable[PageAddress]) -> None:
         with self._lock:
             self._retired.update(addresses)
@@ -51,7 +71,7 @@ class PageRetirement:
             self._reap_locked()
 
     def _reap_locked(self) -> None:
-        obsolete = self._retired.difference(self._current)
+        obsolete = self._retired.difference(self._current).difference(self._holders)
         for address in sorted(obsolete):
             try:
                 self._pages.discard(address)

@@ -23,7 +23,7 @@ class AnalysisAdmission:
             reason = 'incomplete sample evidence' if isinstance(exc, PageReadError) else str(exc)
             raise AdmissionError(f'analysis rejected: {reason}') from exc
         try:
-            return self._jobs.open(captured, self._visibility.capture)
+            return self._jobs.open(captured)
         except BaseException:
             captured.evidence.close()
             raise

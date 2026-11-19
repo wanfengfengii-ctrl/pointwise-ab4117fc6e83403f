@@ -35,6 +35,23 @@ class TestHandover(LabCase):
         self.assert_original_report(self.issue(old)[1])
         self.assert_corrected_report(self.issue(new)[1])
 
+    def test_accepted_revision_survives_later_publication(self):
+        # A job accepted before the correction has not advanced yet; the later
+        # publication must not leak the replacement pair or reading into it.
+        self.seed()
+        old = self.lab.admission.admit(TRIAL)
+        self.assertEqual(self.lab.revisions.publish(TRIAL, amendment=correction()), 'R2')
+        new = self.lab.admission.admit(TRIAL)
+        self.assertTrue(self.lab.jobs.advance(old, 2).done)
+        self.assertTrue(self.lab.jobs.advance(new, 2).done)
+        old_receipt, old_report = self.issue(old)
+        new_receipt, new_report = self.issue(new)
+        self.assert_original_report(old_report)
+        self.assert_corrected_report(new_report)
+        self.lab = open_lab(self.directory)
+        self.assert_original_report(self.lab.reports.read(old_receipt.report_id))
+        self.assert_corrected_report(self.lab.reports.read(new_receipt.report_id))
+
     def test_missing_replacement(self):
         self.seed()
         old = self.lab.admission.admit(TRIAL)
@@ -104,6 +121,39 @@ class TestHandover(LabCase):
         self.assertIsNone(self.lab.pages.read(reused, missing_key).micrometres)
         self.lab.jobs.advance(new, 2)
         self.assert_corrected_report(self.issue(new)[1])
+
+    def test_accepted_job_reserves_slot_until_finished(self):
+        self.seed()
+        old_key = SampleKey(TRIAL, 'right', 'R2a')
+        original_location = self.lab.catalog.current(TRIAL).locations[old_key]
+        old = self.lab.admission.admit(TRIAL)
+        self.lab.revisions.publish(TRIAL, amendment=correction())
+        # No batch has run yet: the old page is leased and neither its content
+        # nor its slot may be taken before this job finishes.
+        self.assertEqual(self.lab.pages.read(original_location, old_key).micrometres, 7)
+        new_key = SampleKey(TRIAL, 'right', 'R2b')
+        new_location = self.lab.catalog.current(TRIAL).locations[new_key]
+        self.assertNotEqual(new_location.address.slot, original_location.address.slot)
+        self.assertTrue(self.lab.jobs.advance(old, 2).done)
+        self.assert_original_report(self.issue(old)[1])
+        with self.assertRaises(PageReadError):
+            self.lab.pages.read(original_location, old_key)
+
+    def test_failed_advance_keeps_lease_and_progress(self):
+        self.seed()
+        job = self.lab.admission.admit(TRIAL)
+        location = self.lab.catalog.current(TRIAL).locations[SampleKey(TRIAL, 'right', 'R2a')]
+        page = self.lab.pages.path_for(location.address)
+        data = page.read_bytes()
+        page.unlink()
+        try:
+            with self.assertRaises(PageReadError):
+                self.lab.jobs.advance(job, 2)
+        finally:
+            page.write_bytes(data)
+        self.assertEqual(self.lab.jobs.advance(job, 1).processed, 1)
+        self.assertTrue(self.lab.jobs.advance(job, 1).done)
+        self.assert_original_report(self.issue(job)[1])
 
     def test_admission_interleave(self):
         self.seed()
