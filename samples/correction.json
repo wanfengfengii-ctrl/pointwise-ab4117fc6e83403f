@@ -1,0 +1,7 @@
+{
+  "name": "第二对右台架样本更正",
+  "parent_revision": "R1",
+  "pairs": [
+    {"pair_id": "P02", "left": "L2", "right": "R2b"}
+  ]
+}
